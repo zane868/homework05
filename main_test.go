@@ -39,3 +39,22 @@ func TestSafeError(t *testing.T) {
 		t.Fatalf("secret appeared in error: %s", message)
 	}
 }
+
+func TestCommandDispatch(t *testing.T) {
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"block"}, "请提供 -number"},
+		{[]string{"tx", "get"}, "请提供有效的"},
+		{[]string{"tx", "send"}, "请提供有效的 -to"},
+		{[]string{"account", "txs"}, "请提供有效的 -address"},
+		{[]string{"unknown"}, "未知命令"},
+	}
+	for _, test := range tests {
+		err := run(test.args)
+		if err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Errorf("run(%q) = %v; want error containing %q", test.args, err, test.want)
+		}
+	}
+}

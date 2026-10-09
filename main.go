@@ -47,33 +47,46 @@ func safeError(err error) string {
 	return message
 }
 
+type Command interface {
+	Execute(args []string) error
+}
+
+type blockCommand struct{}
+type txGetCommand struct{}
+type txSendCommand struct{}
+type accountTxsCommand struct{}
+type helpCommand struct{}
+
+var commands = map[string]Command{
+	"block":       blockCommand{},
+	"tx get":      txGetCommand{},
+	"tx send":     txSendCommand{},
+	"account txs": accountTxsCommand{},
+	"help":        helpCommand{},
+	"-h":          helpCommand{},
+	"--help":      helpCommand{},
+}
+
 func run(args []string) error {
 	if len(args) == 0 {
 		printUsage()
 		return nil
 	}
-	switch args[0] {
-	case "block":
-		return runBlock(args[1:])
-	case "tx":
-		if len(args) < 2 {
-			return errors.New("用法：tx get -hash 0x... 或 tx send -to 0x... -amount 0.01")
+	for count := len(args); count > 0; count-- {
+		name := strings.Join(args[:count], " ")
+		if command, ok := commands[name]; ok {
+			return command.Execute(args[count:])
 		}
-		switch args[1] {
-		case "get":
-			return runTxGet(args[2:])
-		case "send":
-			return runTxSend(args[2:])
-		}
-	case "account":
-		if len(args) >= 2 && args[1] == "txs" {
-			return runAccountTxs(args[2:])
-		}
-	case "help", "-h", "--help":
-		printUsage()
-		return nil
 	}
 	return fmt.Errorf("未知命令：%s；运行 go run . help 查看用法", strings.Join(args, " "))
+}
+
+func (helpCommand) Execute(args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("help 不接受参数：%s", strings.Join(args, " "))
+	}
+	printUsage()
+	return nil
 }
 
 func printUsage() {
@@ -120,7 +133,7 @@ func dialSepolia(ctx context.Context) (*ethclient.Client, error) {
 	return client, nil
 }
 
-func runBlock(args []string) error {
+func (blockCommand) Execute(args []string) error {
 	fs := flag.NewFlagSet("block", flag.ContinueOnError)
 	number := fs.Uint64("number", 0, "要查询的区块号")
 	if err := parseFlags(fs, args); err != nil {
@@ -150,7 +163,7 @@ func runBlock(args []string) error {
 	return nil
 }
 
-func runTxGet(args []string) error {
+func (txGetCommand) Execute(args []string) error {
 	fs := flag.NewFlagSet("tx get", flag.ContinueOnError)
 	hashText := fs.String("hash", "", "交易哈希")
 	if err := parseFlags(fs, args); err != nil {
@@ -194,7 +207,7 @@ func runTxGet(args []string) error {
 	return nil
 }
 
-func runTxSend(args []string) error {
+func (txSendCommand) Execute(args []string) error {
 	fs := flag.NewFlagSet("tx send", flag.ContinueOnError)
 	toText := fs.String("to", "", "接收地址")
 	amountText := fs.String("amount", "", "ETH 金额，例如 0.01")
@@ -297,7 +310,7 @@ type accountTx struct {
 	IsError     string `json:"isError"`
 }
 
-func runAccountTxs(args []string) error {
+func (accountTxsCommand) Execute(args []string) error {
 	fs := flag.NewFlagSet("account txs", flag.ContinueOnError)
 	address := fs.String("address", "", "要查询的地址")
 	page := fs.Int("page", 1, "页码")
