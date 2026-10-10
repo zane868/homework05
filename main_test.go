@@ -49,6 +49,9 @@ func TestCommandDispatch(t *testing.T) {
 		{[]string{"tx", "get"}, "请提供有效的"},
 		{[]string{"tx", "send"}, "请提供有效的 -to"},
 		{[]string{"account", "txs"}, "请提供有效的 -address"},
+		{[]string{"donation", "get"}, "请提供有效的 -donor"},
+		{[]string{"donation", "send"}, "无效的 -amount"},
+		{[]string{"donation", "events"}, "请提供有效的 -tx"},
 		{[]string{"unknown"}, "未知命令"},
 	}
 	for _, test := range tests {

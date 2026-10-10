@@ -1,6 +1,6 @@
 # Sepolia 区块链交互示例
 
-这个 Go 命令行程序可以查询 Sepolia 区块、查询单笔交易、发送测试 ETH，以及查询某个地址的普通交易记录。
+这个 Go 命令行程序可以查询 Sepolia 区块、查询单笔交易、发送测试 ETH、查询某个地址的普通交易记录，以及调用捐赠合约。
 
 ## 准备环境
 
@@ -14,8 +14,8 @@
 
    | 环境变量 | 用途 |
    | --- | --- |
-   | `SEPOLIA_RPC_URL` | Sepolia RPC 地址；`block`、`tx get`、`tx send` 需要 |
-   | `SEPOLIA_PRIVATE_KEY` | 发送交易的测试账户私钥；仅 `tx send` 需要，可带或不带 `0x` 前缀 |
+   | `SEPOLIA_RPC_URL` | Sepolia RPC 地址；除 `account txs` 外的查询和发送命令都需要 |
+   | `SEPOLIA_PRIVATE_KEY` | 发送交易的测试账户私钥；`tx send` 和 `donation send` 需要，可带或不带 `0x` 前缀 |
    | `ETHERSCAN_API_KEY` | Etherscan API Key；仅 `account txs` 需要，不能用 Infura Key 代替 |
 
    例如，`SEPOLIA_RPC_URL` 可以使用 Infura 提供的 Sepolia HTTPS RPC 地址。私钥只用于专门的测试账户，不要写进代码、README 或 Git 提交，也不要分享给别人。
@@ -62,6 +62,33 @@ go run . account txs -address 0x要查询的地址 -page 2 -limit 20
 ```
 
 该命令使用 [Etherscan V2 的 `account/txlist` 接口](https://docs.etherscan.io/api-reference/endpoint/txlist)，按时间从新到旧输出普通交易。默认查询第 1 页，每页 10 条；`-limit` 可设为 1 到 100。它不列出合约内部转账或 ERC-20 代币转账事件。
+
+## 捐赠合约
+
+Donation 命令固定使用 Sepolia 合约地址 `0x061D631016a3850877074e2727640065f7eEd7a4`，无需传入合约地址。程序使用 `bindings/BeggingContract.go` 中的 ABI 编码调用、解码返回值和事件。
+
+查询某个地址的累计捐赠额，不需要私钥：
+
+```bash
+go run . donation get -donor 0x捐赠者地址
+```
+
+调用 `Donate()` 捐赠 0.01 个 Sepolia ETH：
+
+```bash
+go run . donation send -amount 0.01
+```
+
+`-amount` 的单位是 ETH。程序从 `SEPOLIA_PRIVATE_KEY` 推导捐赠者地址，将金额作为交易的 `value`，把 `Donate()` 编码为交易的 `data`，然后签名并发送。**执行这条命令会实际向 Sepolia 广播交易**；重复执行会再次捐赠。发送后会输出交易哈希。
+
+交易确认后，查看该笔交易的 `Donated` 事件：
+
+```bash
+go run . tx get -hash 0x交易哈希
+go run . donation events -tx 0x交易哈希
+```
+
+事件命令输出捐赠者、本次金额和累计金额。若交易尚未确认，需稍后重试。
 
 ## 检查代码
 

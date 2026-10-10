@@ -22,9 +22,12 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/params"
+
+	"homework05/bindings"
 )
 
 const sepoliaChainID = 11155111
+const donationContractHex = "0x061D631016a3850877074e2727640065f7eEd7a4"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -34,6 +37,139 @@ func main() {
 		fmt.Fprintln(os.Stderr, "错误：", safeError(err))
 		os.Exit(1)
 	}
+}
+
+func getDonation(
+	ctx context.Context,
+	client *ethclient.Client,
+	contractAddress common.Address,
+	donor common.Address,
+) (*big.Int, error) {
+	contract := bindings.NewBeggingContract()
+	data := contract.PackGetDonation(donor)
+	result, err := client.CallContract(ctx, ethereum.CallMsg{
+		To:   &contractAddress,
+		Data: data,
+	}, nil) // nil 表示查询最新区块
+	if err != nil {
+		return nil, err
+	}
+	return contract.UnpackGetDonation(result)
+}
+
+func (donationGetCommand) Execute(args []string) error {
+	fs := flag.NewFlagSet("donation get", flag.ContinueOnError)
+	donorText := fs.String("donor", "", "捐赠者地址")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	if !common.IsHexAddress(*donorText) {
+		return errors.New("请提供有效的 -donor 地址")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	client, err := dialSepolia(ctx)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	contractAddress := common.HexToAddress(donationContractHex)
+	donor := common.HexToAddress(*donorText)
+	amount, err := getDonation(ctx, client, contractAddress, donor)
+	if err != nil {
+		return fmt.Errorf("查询捐赠额失败：%w", err)
+	}
+	fmt.Println("合约地址：", contractAddress.Hex())
+	fmt.Println("捐赠者：", donor.Hex())
+	fmt.Println("累计捐赠：", formatWei(amount), "ETH")
+	fmt.Println("累计捐赠（wei）：", amount)
+	return nil
+}
+
+func (donationSendCommand) Execute(args []string) error {
+	fs := flag.NewFlagSet("donation send", flag.ContinueOnError)
+	amountText := fs.String("amount", "", "捐赠金额（ETH）")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	amount, err := parseEther(*amountText)
+	if err != nil {
+		return fmt.Errorf("无效的 -amount：%w", err)
+	}
+	privateKey, err := loadPrivateKey()
+	if err != nil {
+		return err
+	}
+	contractAddress := common.HexToAddress(donationContractHex)
+	from := crypto.PubkeyToAddress(privateKey.PublicKey)
+	data, err := bindings.NewBeggingContract().TryPackDonate()
+	if err != nil {
+		return fmt.Errorf("编码 Donate 调用失败：%w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client, err := dialSepolia(ctx)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	hash, err := sendValueTransaction(ctx, client, privateKey, from, contractAddress, amount, data)
+	if err != nil {
+		return err
+	}
+	fmt.Println("捐赠者：", from.Hex())
+	fmt.Println("合约地址：", contractAddress.Hex())
+	fmt.Println("捐赠金额：", formatWei(amount), "ETH")
+	fmt.Println("交易哈希：", hash.Hex())
+	fmt.Println("查询状态：go run . tx get -hash", hash.Hex())
+	fmt.Println("查看事件：go run . donation events -tx", hash.Hex())
+	return nil
+}
+
+func (donationEventsCommand) Execute(args []string) error {
+	fs := flag.NewFlagSet("donation events", flag.ContinueOnError)
+	hashText := fs.String("tx", "", "捐赠交易哈希")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	if !isHexHash(*hashText) {
+		return errors.New("请提供有效的 -tx 交易哈希")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	client, err := dialSepolia(ctx)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	receipt, err := client.TransactionReceipt(ctx, common.HexToHash(*hashText))
+	if err != nil {
+		return fmt.Errorf("查询交易回执失败：%w", err)
+	}
+	if receipt.Status != types.ReceiptStatusSuccessful {
+		return errors.New("交易执行失败，没有成功的捐赠事件")
+	}
+	contractAddress := common.HexToAddress(donationContractHex)
+	contract := bindings.NewBeggingContract()
+	eventID := contract.GetABI().Events["Donated"].ID
+	found := false
+	for _, entry := range receipt.Logs {
+		if entry.Address != contractAddress || len(entry.Topics) == 0 || entry.Topics[0] != eventID {
+			continue
+		}
+		event, err := contract.UnpackDonatedEvent(entry)
+		if err != nil {
+			return fmt.Errorf("解析 Donated 事件失败：%w", err)
+		}
+		found = true
+		fmt.Println("捐赠者：", event.Donor.Hex())
+		fmt.Println("本次金额：", formatWei(event.Amount), "ETH")
+		fmt.Println("累计金额：", formatWei(event.TotalDonated), "ETH")
+	}
+	if !found {
+		fmt.Println("这笔交易没有 Donated 事件")
+	}
+	return nil
 }
 
 func safeError(err error) string {
@@ -55,16 +191,22 @@ type blockCommand struct{}
 type txGetCommand struct{}
 type txSendCommand struct{}
 type accountTxsCommand struct{}
+type donationGetCommand struct{}
+type donationSendCommand struct{}
+type donationEventsCommand struct{}
 type helpCommand struct{}
 
 var commands = map[string]Command{
-	"block":       blockCommand{},
-	"tx get":      txGetCommand{},
-	"tx send":     txSendCommand{},
-	"account txs": accountTxsCommand{},
-	"help":        helpCommand{},
-	"-h":          helpCommand{},
-	"--help":      helpCommand{},
+	"block":           blockCommand{},
+	"tx get":          txGetCommand{},
+	"tx send":         txSendCommand{},
+	"account txs":     accountTxsCommand{},
+	"donation get":    donationGetCommand{},
+	"donation send":   donationSendCommand{},
+	"donation events": donationEventsCommand{},
+	"help":            helpCommand{},
+	"-h":              helpCommand{},
+	"--help":          helpCommand{},
 }
 
 func run(args []string) error {
@@ -95,10 +237,13 @@ func printUsage() {
   go run . tx get -hash 0x...
   go run . tx send -to 0x... -amount 0.01
   go run . account txs -address 0x... [-page 1] [-limit 10]
+  go run . donation get -donor 0x...
+  go run . donation send -amount 0.01
+  go run . donation events -tx 0x...
 
 环境变量：
-  SEPOLIA_RPC_URL       区块和交易命令所需的 Sepolia RPC 地址
-  SEPOLIA_PRIVATE_KEY   仅 tx send 需要的测试账户私钥
+  SEPOLIA_RPC_URL       区块、交易和捐赠命令所需的 Sepolia RPC 地址
+  SEPOLIA_PRIVATE_KEY   tx send 和 donation send 需要的测试账户私钥
   ETHERSCAN_API_KEY     仅 account txs 需要的 Etherscan API Key`)
 }
 
@@ -221,13 +366,9 @@ func (txSendCommand) Execute(args []string) error {
 	if err != nil {
 		return fmt.Errorf("无效的 -amount：%w", err)
 	}
-	privateKeyText := strings.TrimPrefix(os.Getenv("SEPOLIA_PRIVATE_KEY"), "0x")
-	if privateKeyText == "" {
-		return errors.New("请先设置 SEPOLIA_PRIVATE_KEY")
-	}
-	privateKey, err := crypto.HexToECDSA(privateKeyText)
+	privateKey, err := loadPrivateKey()
 	if err != nil {
-		return errors.New("SEPOLIA_PRIVATE_KEY 格式无效")
+		return err
 	}
 	from := crypto.PubkeyToAddress(privateKey.PublicKey)
 	to := common.HexToAddress(*toText)
@@ -238,7 +379,7 @@ func (txSendCommand) Execute(args []string) error {
 		return err
 	}
 	defer client.Close()
-	hash, err := sendEther(ctx, client, privateKey, from, to, value)
+	hash, err := sendValueTransaction(ctx, client, privateKey, from, to, value, nil)
 	if err != nil {
 		return err
 	}
@@ -250,12 +391,24 @@ func (txSendCommand) Execute(args []string) error {
 	return nil
 }
 
-func sendEther(ctx context.Context, client *ethclient.Client, privateKey *ecdsa.PrivateKey, from, to common.Address, value *big.Int) (common.Hash, error) {
+func loadPrivateKey() (*ecdsa.PrivateKey, error) {
+	privateKeyText := strings.TrimPrefix(os.Getenv("SEPOLIA_PRIVATE_KEY"), "0x")
+	if privateKeyText == "" {
+		return nil, errors.New("请先设置 SEPOLIA_PRIVATE_KEY")
+	}
+	privateKey, err := crypto.HexToECDSA(privateKeyText)
+	if err != nil {
+		return nil, errors.New("SEPOLIA_PRIVATE_KEY 格式无效")
+	}
+	return privateKey, nil
+}
+
+func sendValueTransaction(ctx context.Context, client *ethclient.Client, privateKey *ecdsa.PrivateKey, from, to common.Address, value *big.Int, data []byte) (common.Hash, error) {
 	nonce, err := client.PendingNonceAt(ctx, from)
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("获取 Nonce 失败：%w", err)
 	}
-	gas, err := client.EstimateGas(ctx, ethereum.CallMsg{From: from, To: &to, Value: value})
+	gas, err := client.EstimateGas(ctx, ethereum.CallMsg{From: from, To: &to, Value: value, Data: data})
 	if err != nil {
 		return common.Hash{}, fmt.Errorf("估算 Gas 失败，请检查接收地址是否为拒收 ETH 的合约：%w", err)
 	}
@@ -289,6 +442,7 @@ func sendEther(ctx context.Context, client *ethclient.Client, privateKey *ecdsa.
 		Gas:       gas,
 		To:        &to,
 		Value:     value,
+		Data:      data,
 	})
 	signedTx, err := types.SignTx(tx, types.LatestSignerForChainID(chainID), privateKey)
 	if err != nil {
